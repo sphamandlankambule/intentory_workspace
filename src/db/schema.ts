@@ -1,11 +1,12 @@
 import { relations } from 'drizzle-orm';
 import { integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 
-// Define the 'users' table mapped to Firebase Auth profiles
+// Define the 'users' table mapped to local username/password or Firebase Auth profiles
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
-  uid: text('uid').notNull().unique(), // Firebase Auth UID
-  email: text('email').notNull(),
+  uid: text('uid').notNull().unique(), // Unique identifier
+  email: text('email').notNull().unique(),
+  passwordHash: text('password_hash'), // salted PBKDF2 hash of local password
   role: text('role').notNull().default('staff'), // 'admin' | 'manager' | 'staff'
   createdAt: timestamp('created_at').defaultNow(),
 });

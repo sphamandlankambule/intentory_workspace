@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
-import { adminAuth } from '../lib/firebase-admin.ts';
-import { getOrCreateUser } from '../db/users-helper.ts';
+import { verifyToken } from '../lib/auth-local.ts';
+import { db } from '../db/index.ts';
+import { users } from '../db/schema.ts';
+import { eq } from 'drizzle-orm';
 
 export interface AuthUser {
   uid: string;
@@ -20,24 +22,33 @@ export const requireAuth = async (
 ) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Unauthorized: Missing token' });
+    return res.status(401).json({ error: 'Unauthorized: Missing session token' });
   }
 
   const token = authHeader.split('Bearer ')[1];
   try {
-    const decodedToken = await adminAuth.verifyIdToken(token);
-    const dbUser = await getOrCreateUser(decodedToken.uid, decodedToken.email || 'anonymous@domain.com');
+    const decoded = verifyToken(token);
+    if (!decoded) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid or expired session token' });
+    }
 
+    // Verify user exists in database and get latest details
+    const dbUserList = await db.select().from(users).where(eq(users.id, decoded.id)).limit(1);
+    if (dbUserList.length === 0) {
+      return res.status(401).json({ error: 'Unauthorized: User account no longer exists' });
+    }
+
+    const dbUser = dbUserList[0];
     req.user = {
-      uid: decodedToken.uid,
-      email: decodedToken.email || 'anonymous@domain.com',
+      uid: dbUser.uid,
+      email: dbUser.email,
       dbId: dbUser.id,
       role: dbUser.role,
     };
     next();
   } catch (error) {
-    console.error('Error verifying Firebase ID token:', error);
-    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+    console.error('Error in authentication middleware validation:', error);
+    return res.status(401).json({ error: 'Unauthorized: Session authentication failed' });
   }
 };
 
@@ -53,3 +64,4 @@ export const requireRoles = (allowedRoles: string[]) => {
     next();
   };
 };
+

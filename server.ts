@@ -1,10 +1,12 @@
 import express from 'express';
 import path from 'path';
+import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { db } from './src/db/index.ts';
 import { items, movements, users } from './src/db/schema.ts';
 import { eq, sql, desc, and } from 'drizzle-orm';
 import { requireAuth, requireRoles, AuthRequest } from './src/middleware/auth.ts';
+import { hashPassword, verifyPassword, generateToken } from './src/lib/auth-local.ts';
 
 async function startServer() {
   const app = express();
@@ -12,6 +14,127 @@ async function startServer() {
 
   // Middleware to parse incoming request JSON bodies
   app.use(express.json());
+
+  // Defensive seed of default administrator (admin@warehouse.com / admin123) if no users exist in database yet
+  try {
+    const existingUsers = await db.select().from(users).limit(1);
+    if (existingUsers.length === 0) {
+      console.log("Database contains no users. Seeding default Admin: admin@warehouse.com / password: admin123...");
+      const defaultPassHash = hashPassword('admin123');
+      await db.insert(users).values({
+        uid: 'default-admin-local-account',
+        email: 'admin@warehouse.com',
+        role: 'admin',
+        passwordHash: defaultPassHash,
+      });
+      console.log("Default local admin account seeded successfully.");
+    }
+  } catch (error: any) {
+    console.warn("Seeding database checks deferred:", error.message || error);
+  }
+
+  // --- LOCAL USER ACCOUNT ENDPOINTS ---
+
+  // POST /api/auth/register - Create a staff/operator account locally
+  app.post('/api/auth/register', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password fields are required." });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters in length." });
+    }
+
+    try {
+      // Prevent duplicates
+      const dup = await db.select().from(users).where(eq(users.email, cleanEmail)).limit(1);
+      if (dup.length > 0) {
+        return res.status(400).json({ error: "This email address/username is already registered." });
+      }
+
+      // Check user roles assignment
+      const allUsers = await db.select().from(users).limit(1);
+      const defaultRole = allUsers.length === 0 ? 'admin' : 'staff';
+
+      const secHash = hashPassword(password);
+      const randUid = `local-${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15)}`;
+
+      const insertedUserList = await db.insert(users)
+        .values({
+          uid: randUid,
+          email: cleanEmail,
+          passwordHash: secHash,
+          role: defaultRole,
+        })
+        .returning();
+
+      const newUser = insertedUserList[0];
+      const token = generateToken({ id: newUser.id, email: newUser.email, role: newUser.role });
+
+      res.status(201).json({
+        message: "Account constructed successfully",
+        token: token,
+        user: {
+          id: newUser.id,
+          uid: newUser.uid,
+          email: newUser.email,
+          role: newUser.role,
+        }
+      });
+    } catch (err) {
+      console.error("Account registration api exception:", err);
+      res.status(500).json({ error: "Failed to construct local database credential user profile." });
+    }
+  });
+
+  // POST /api/auth/login - Local username and password verification endpoint
+  app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required." });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    try {
+      const selected = await db.select().from(users).where(eq(users.email, cleanEmail)).limit(1);
+      if (selected.length === 0) {
+        return res.status(401).json({ error: "Login authorization rejected: Invalid email or password." });
+      }
+
+      const userRecord = selected[0];
+      if (!userRecord.passwordHash) {
+        return res.status(401).json({ error: "Login failed: This user has no password configured. Please register a standard password login." });
+      }
+
+      const matching = verifyPassword(password, userRecord.passwordHash);
+      if (!matching) {
+        return res.status(401).json({ error: "Login authorization rejected: Invalid email or password." });
+      }
+
+      // Generate local token
+      const token = generateToken({ id: userRecord.id, email: userRecord.email, role: userRecord.role });
+
+      res.json({
+        message: "Authenticated successfully",
+        token: token,
+        user: {
+          id: userRecord.id,
+          uid: userRecord.uid,
+          email: userRecord.email,
+          role: userRecord.role,
+        }
+      });
+    } catch (err) {
+      console.error("Login verification database lookup failure:", err);
+      res.status(500).json({ error: "Core auth engine failed. Please audit server db integration." });
+    }
+  });
 
   // 0. GET /api/me - Retrieve current authenticated operator info and roles
   app.get('/api/me', requireAuth, (req: AuthRequest, res) => {

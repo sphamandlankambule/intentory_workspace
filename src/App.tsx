@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from './context/AuthContext.tsx';
 import { DashboardStats } from './components/DashboardStats.tsx';
 import { MovementChart } from './components/MovementChart.tsx';
@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 
 export default function App() {
-  const { user, dbUser, token, loading, signInWithGoogle, logout } = useAuth();
+  const { user, dbUser, token, loading, login, register, logout } = useAuth();
   
   // Dashboard & Catalog Data States
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -20,6 +20,13 @@ export default function App() {
   const [stats, setStats] = useState<TrendStat[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState('');
+
+  // Local Credentials Auth States
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
 
   // Tab control state
   const [activeTab, setActiveTab] = useState<'inventory' | 'audit' | 'users'>('inventory');
@@ -50,9 +57,36 @@ export default function App() {
       setStats(statsData);
     } catch (err: any) {
       console.error(err);
-      setDataError(err.message || 'Failed to synchronize with Cloud SQL.');
+      setDataError(err.message || 'Failed to synchronize with server database.');
     } finally {
       setDataLoading(false);
+    }
+  };
+
+  // Submit Handler for local credentials
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    const trimmedEmail = authEmail.trim();
+    if (!trimmedEmail || !authPassword) {
+      setAuthError('Email and password fields are required.');
+      return;
+    }
+    if (authPassword.length < 6) {
+      setAuthError('Password must be at least 6 characters long.');
+      return;
+    }
+    setAuthSubmitting(true);
+    try {
+      if (authMode === 'login') {
+        await login(trimmedEmail, authPassword);
+      } else {
+        await register(trimmedEmail, authPassword);
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Authentication failed. Please check credentials or network.');
+    } finally {
+      setAuthSubmitting(false);
     }
   };
 
@@ -70,8 +104,8 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#fafafb] flex flex-col items-center justify-center gap-3">
-        <Loader2 className="w-8 h-8 animate-spin text-slate-950" />
-        <span className="text-xs font-mono tracking-wider text-slate-400 uppercase">Synchronizing sessions...</span>
+        <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+        <span className="text-xs font-mono tracking-wider text-slate-400 uppercase">Synchronizing local session...</span>
       </div>
     );
   }
@@ -88,25 +122,107 @@ export default function App() {
             </div>
             <h2 className="text-lg font-bold font-sans text-slate-900 tracking-tight uppercase">INV-TRACE SYSTEM</h2>
             <p className="text-xs text-slate-400 font-sans max-w-xs mx-auto leading-relaxed">
-              Automated low-inventory notifications, trace log auditing, and role-based permissions access panel
+              Local hosted secure warehouse operations & traceability database engine
             </p>
           </div>
 
-          <div className="border-t border-slate-100 pt-5">
+          {/* Tab buttons to toggle login / register */}
+          <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1.5 rounded-2xl border border-slate-200/50">
             <button
-              id="btn-login-sso"
-              onClick={signInWithGoogle}
-              className="w-full inline-flex items-center justify-center gap-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-mono py-3.5 px-4 rounded-xl cursor-pointer transition-colors shadow-md shadow-indigo-500/15"
+              onClick={() => {
+                setAuthMode('login');
+                setAuthError('');
+              }}
+              className={`py-2 px-3 text-xs font-mono uppercase font-bold rounded-xl transition-all cursor-pointer ${
+                authMode === 'login' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
             >
-              <LogIn className="w-4 h-4" />
-              AUTHENTICATE WITH GOOGLE SSO
+              Sign In
+            </button>
+            <button
+              onClick={() => {
+                setAuthMode('register');
+                setAuthError('');
+              }}
+              className={`py-2 px-3 text-xs font-mono uppercase font-bold rounded-xl transition-all cursor-pointer ${
+                authMode === 'register' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Configure Account
             </button>
           </div>
 
-          <div className="bg-slate-50 border border-slate-250/65 rounded-2xl p-4 space-y-1">
-            <h4 className="text-[10px] font-mono text-slate-500 uppercase tracking-widest font-bold">Operator Privacy footprint</h4>
+          {authError && (
+            <div className="bg-red-50 border border-red-200 text-red-800 text-xs p-3.5 rounded-2xl flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
+              <span>{authError}</span>
+            </div>
+          )}
+
+          {/* Form wrapper */}
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider block">
+                Email/Username Address
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
+                <input
+                  type="email"
+                  required
+                  placeholder="operator@warehouse.com"
+                  disabled={authSubmitting}
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-250/70 rounded-xl pl-9 pr-3 py-2.5 text-xs font-sans text-slate-800 focus:outline-hidden focus:border-indigo-500 placeholder:text-slate-400 transition-colors"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider block">
+                Security Password
+              </label>
+              <input
+                type="password"
+                required
+                placeholder="••••••"
+                disabled={authSubmitting}
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-250/70 rounded-xl px-3 py-2.5 text-xs font-sans text-slate-800 focus:outline-hidden focus:border-indigo-500 placeholder:text-slate-400 transition-colors"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={authSubmitting}
+              className="w-full inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white text-xs font-mono font-bold py-3.5 px-4 rounded-xl cursor-pointer transition-colors shadow-md shadow-indigo-500/15"
+            >
+              {authSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  AUTHENTICATING CLIENT...
+                </>
+              ) : (
+                <>
+                  <LogIn className="w-4 h-4" />
+                  {authMode === 'login' ? 'AUTHORIZE OPERATOR' : 'REGISTER NEW OPERATOR'}
+                </>
+              )}
+            </button>
+          </form>
+
+
+
+          <div className="bg-slate-50 border border-slate-250/50 rounded-2xl p-3.5">
+            <h4 className="text-[10px] font-mono text-slate-500 uppercase tracking-widest font-bold mb-1">traceability notice</h4>
             <p className="text-[11px] text-slate-400 font-sans leading-relaxed">
-              Every checkout distributed or stock received is automatically linked to your authenticated operator credentials for full traceability and accountability.
+              Every checkout distributed or stock received is linked to your authenticated operator account in the local postgres database ledger.
             </p>
           </div>
 

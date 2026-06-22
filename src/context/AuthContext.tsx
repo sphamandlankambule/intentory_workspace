@@ -1,11 +1,4 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { 
-  onAuthStateChanged, 
-  signInWithPopup, 
-  signOut, 
-  User 
-} from 'firebase/auth';
-import { auth, googleAuthProvider } from '../lib/firebase.ts';
 
 interface DbUser {
   dbId: number;
@@ -13,93 +6,175 @@ interface DbUser {
   role: 'admin' | 'manager' | 'staff';
 }
 
+interface UserSession {
+  uid: string;
+  email: string;
+  dbId: number;
+  role: 'admin' | 'manager' | 'staff';
+}
+
 interface AuthContextType {
-  user: User | null;
+  user: UserSession | null;
   dbUser: DbUser | null;
   token: string | null;
   loading: boolean;
-  signInWithGoogle: () => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
+  signInWithGoogle?: () => Promise<void>; // for compatibility with legacy calls
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<UserSession | null>(null);
   const [dbUser, setDbUser] = useState<DbUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
-  const fetchProfile = async (idToken: string) => {
+  // Sync profile details by calling GET /api/me using the stored token
+  const fetchProfile = async (sessionToken: string): Promise<boolean> => {
     try {
       const res = await fetch('/api/me', {
         headers: {
-          'Authorization': `Bearer ${idToken}`
+          'Authorization': `Bearer ${sessionToken}`
         }
       });
       if (res.ok) {
         const data = await res.json();
         if (data.user) {
+          const mappedUser: UserSession = {
+            uid: data.user.uid,
+            email: data.user.email,
+            dbId: data.user.dbId,
+            role: data.user.role
+          };
+          setUser(mappedUser);
           setDbUser({
             dbId: data.user.dbId,
             email: data.user.email,
             role: data.user.role
           });
+          return true;
         }
       }
     } catch (err) {
       console.error("Failed to sync database user profile", err);
     }
+    return false;
   };
 
   const refreshProfile = async () => {
-    if (user && token) {
+    if (token) {
       await fetchProfile(token);
     }
   };
 
+  // Re-hydrate session token from localStorage upon initial application boot
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const initializeAuth = async () => {
       setLoading(true);
-      if (currentUser) {
-        try {
-          const idToken = await currentUser.getIdToken(true);
-          setToken(idToken);
-          setUser(currentUser);
-          await fetchProfile(idToken);
-        } catch (err) {
-          console.error("Error retrieving Firebase ID token", err);
+      const storedToken = localStorage.getItem('inv_trace_jwt_token');
+      if (storedToken) {
+        setToken(storedToken);
+        const success = await fetchProfile(storedToken);
+        if (!success) {
+          // Token is dead or invalid, clear cache
+          localStorage.removeItem('inv_trace_jwt_token');
           setToken(null);
           setUser(null);
           setDbUser(null);
         }
-      } else {
-        setUser(null);
-        setDbUser(null);
-        setToken(null);
       }
       setLoading(false);
-    });
+    };
 
-    return () => unsubscribe();
+    initializeAuth();
   }, []);
 
-  const signInWithGoogle = async () => {
+  const login = async (email: string, password: string) => {
     setLoading(true);
     try {
-      await signInWithPopup(auth, googleAuthProvider);
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Server rejected credentials authentication');
+      }
+
+      if (data.token && data.user) {
+        localStorage.setItem('inv_trace_jwt_token', data.token);
+        setToken(data.token);
+        setUser({
+          uid: data.user.uid,
+          email: data.user.email,
+          dbId: data.user.id,
+          role: data.user.role,
+        });
+        setDbUser({
+          dbId: data.user.id,
+          email: data.user.email,
+          role: data.user.role,
+        });
+      }
     } catch (err) {
-      console.error("Google Authentication error", err);
-      setLoading(false);
+      console.error("Local Login attempt failed:", err);
       throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const register = async (email: string, password: string) => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Server rejected account creation request.');
+      }
+
+      if (data.token && data.user) {
+        localStorage.setItem('inv_trace_jwt_token', data.token);
+        setToken(data.token);
+        setUser({
+          uid: data.user.uid,
+          email: data.user.email,
+          dbId: data.user.id,
+          role: data.user.role,
+        });
+        setDbUser({
+          dbId: data.user.id,
+          email: data.user.email,
+          role: data.user.role,
+        });
+      }
+    } catch (err) {
+      console.error("Local registration attempt failed:", err);
+      throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
   const logout = async () => {
     setLoading(true);
     try {
-      await signOut(auth);
+      localStorage.removeItem('inv_trace_jwt_token');
       setToken(null);
       setUser(null);
       setDbUser(null);
@@ -116,9 +191,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       dbUser, 
       token, 
       loading, 
-      signInWithGoogle, 
+      login, 
+      register,
       logout,
-      refreshProfile
+      refreshProfile,
+      signInWithGoogle: () => login('admin@warehouse.com', 'admin123') // simple fallback
     }}>
       {children}
     </AuthContext.Provider>
