@@ -1,0 +1,6 @@
+{
+  "name": "In-House Inventory System",
+  "description": "An in-house inventory management and tracking system with real-time stock levels, low-inventory alerts, role-based access, historical distribution trends, and CSV/PDF export controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
